@@ -7,22 +7,25 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=4)
 def get_llm(temperature: float = 0.0) -> BaseChatModel:
     provider = settings.LLM_PROVIDER.lower()
-    logger.info(f"Initializing LLM with provider: {provider}, model: {settings.LLM_MODEL}")
+    model_name = settings.LLM_MODEL
+    logger.info(f"Initializing LLM with provider: {provider}, model: {model_name}")
     
     if provider == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=settings.LLM_MODEL, temperature=temperature)
+        return ChatOpenAI(model=model_name, temperature=temperature, request_timeout=30)
     elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key = os.getenv("GOOGLE_API_KEY")
         if api_key:
             os.environ["GOOGLE_API_KEY"] = api_key
         return ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            temperature=temperature
+            model=model_name,
+            temperature=temperature,
+            max_retries=2,
+            timeout=30
         )
     elif provider == "ollama":
         from langchain_ollama import ChatOllama
