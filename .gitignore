@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Environment variables & API keys
+.env
+.env.local
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Pytest / Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Index and raw dataset artifacts
+data/index/*
+!data/index/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "q001",
+    "question": "What is discussed on page 1 of web-development-guide.pdf?",
+    "ground_truth": "Web Development: A Detailed Guide\nPage 1\nWeb Development: A Detailed Guide\n1. How the Web Works\nEvery web interaction is a conversation between a clie...",
+    "expected_source": "web-development-guide.pdf",
+    "type": "in_docs"
+  },
+  {
+    "id": "q002",
+    "question": "What is discussed on page 1 of web-development-guide.pdf?",
+    "ground_truth": "401, 403, 404), 5xx server error (500, 503).\n\u007f\nHeaders: metadata such as Content-Type, Authorization, Cache-Control, Set-Cookie.\n2. HTML: Structure\nHT...",
+    "expected_source": "web-development-guide.pdf",
+    "type": "in_docs"
+  },
+  {
+    "id": "q003",
+    "question": "What is discussed on page 2 of web-development-guide.pdf?",
+    "ground_truth": "Web Development: A Detailed Guide\nPage 2\n<body>\n  <header><nav><a href=\"/\">Home</a></nav></header>\n  <main>\n    <article>\n      <h1>Title</h1>\n      <...",
+    "expected_source": "web-development-guide.pdf",
+    "type": "in_docs"
+  },
+  {
+    "id": "q004",
+    "question": "What is discussed on page 2 of web-development-guide.pdf?",
+    "ground_truth": "Semantic layout (better for accessibility and SEO)\nForms example\n<form action=\"/login\" method=\"POST\">\n  <label for=\"email\">Email</label>\n  <input id=\"...",
+    "expected_source": "web-development-guide.pdf",
+    "type": "in_docs"
+  },
+  {
+    "id": "q005",
+    "question": "What is discussed on page 2 of web-development-guide.pdf?",
+    "ground_truth": "3.1 Syntax and selectors\nselector { property: value; }\np { color: #333; }                 /* element */\n.card { padding: 16px; }           /* class */...",
+    "expected_source": "web-development-guide.pdf",
+    "type": "in_docs"
+  },
+  {
+    "id": "q006",
+    "question": "What is the current weather forecast for Tokyo today?",
+    "ground_truth": "NOT_IN_DOCS",
+    "expected_source": null,
+    "type": "out_of_docs"
+  }
+]

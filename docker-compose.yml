@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  agentic-rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic_rag_research_assistant
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-google}
+      - LLM_MODEL=${LLM_MODEL:-gemini-2.5-flash}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-true}
+      - LANGCHAIN_ENDPOINT=${LANGCHAIN_ENDPOINT:-https://api.smith.langchain.com}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-agentic-rag-research-assistant}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
