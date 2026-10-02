@@ -5,6 +5,21 @@ Choose `web_search` if it asks for recent events or facts clearly outside the do
 Choose `chitchat` for greetings, thanks, or general questions about what you can do.
 When unsure between vectorstore and deep_research, choose vectorstore."""
 
+PLANNER_PROMPT = """You are a Lead AI Systems Architect and Research Strategist. Draft a sequential, 3-to-4 step research plan to address the user's prompt thoroughly.
+Each step must focus on a specific sub-dimension:
+- Step 1: Technical Definition & Core Architecture
+- Step 2: Comparative Analysis & Trade-offs
+- Step 3: Security, Scalability & Future Outlook
+
+Make each step clear, concise, and self-contained."""
+
+EVALUATOR_REFLECTION_PROMPT = """You are a Senior Peer Reviewer evaluating a cumulative research knowledge ledger.
+Review the user prompt and the findings gathered across execution steps.
+Decide if the knowledge gathered is sufficient to generate a thorough, high-quality publication-ready research report.
+
+If key aspects are missing and less than 3 execution steps have occurred, mark `sufficient = False` and specify `missing_aspects`.
+Otherwise, mark `sufficient = True`."""
+
 MULTI_QUERY_DECOMPOSITION_PROMPT = """You are a senior research strategist. Decompose the user's input question into 3 distinct, targeted sub-queries covering:
 1. Technical Definition & Core Architecture: Focus on fundamental concepts, definitions, mechanisms, and key components.
 2. Comparative Analysis & Trade-offs: Focus on comparisons, pros and cons, benchmark evaluations, and alternative paradigms.
@@ -12,7 +27,7 @@ MULTI_QUERY_DECOMPOSITION_PROMPT = """You are a senior research strategist. Deco
 
 Ensure all 3 sub-queries are distinct, self-contained, and optimized for document retrieval."""
 
-DEEP_RESEARCH_REPORT_PROMPT = """You are a Lead AI Research Scientist and Systems Architect. Synthesize the provided retrieval context into a publication-ready Deep Research Report.
+DEEP_RESEARCH_REPORT_PROMPT = """You are a Lead AI Research Scientist and Systems Architect. Synthesize the provided cumulative context and knowledge ledger into a publication-ready Deep Research Report.
 
 Your report MUST strictly adhere to the following academic structure:
 
@@ -21,8 +36,8 @@ Your report MUST strictly adhere to the following academic structure:
 ## Executive Summary
 - Provide a high-level overview of the research topic, primary conclusions, and key takeaways.
 
-## Methodology & Retrieval Overview
-- Describe the multi-perspective parallel retrieval process across technical, comparative, and future implication dimensions.
+## Methodology & Multi-Step Research Execution
+- Describe the autonomous Planner-Executor-Evaluator research workflow and multi-perspective retrieval across technical, comparative, and strategic dimensions.
 
 ## Technical Architecture & Core Definitions
 - Detail the technical mechanics, architecture, definitions, and underlying principles found in the sources.
@@ -34,11 +49,11 @@ Your report MUST strictly adhere to the following academic structure:
 - Analyze long-term consequences, scaling implications, security considerations, and future developments.
 
 ## Annotated Bibliography & Source References
-- List every source referenced in the text with inline citations [1], [2], etc., detailing document name/URL, page numbers, and key contribution.
+- List every source referenced in the text with inline citations like [1], [2], etc., detailing document name/URL, page numbers, and key contribution.
 
 Rule: Base all findings strictly on the provided context. If certain details are absent from context, explicitly state the limitation without hallucinating.
 
-Context:
+Context & Knowledge Ledger:
 {context}
 
 Question/Topic:

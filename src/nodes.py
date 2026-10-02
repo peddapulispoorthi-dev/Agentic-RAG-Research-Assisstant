@@ -10,9 +10,18 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.config import settings
 from src.llm import get_llm
 from src.retrievers import get_retriever
-from src.schemas import RouteDecision, RelevanceGrade, GroundingGrade, MultiQueryDecomposition
+from src.schemas import (
+    RouteDecision, 
+    RelevanceGrade, 
+    GroundingGrade, 
+    MultiQueryDecomposition,
+    ResearchPlan,
+    ReflectionDecision
+)
 from src.prompts import (
     ROUTER_PROMPT,
+    PLANNER_PROMPT,
+    EVALUATOR_REFLECTION_PROMPT,
     MULTI_QUERY_DECOMPOSITION_PROMPT,
     DEEP_RESEARCH_REPORT_PROMPT,
     REWRITE_FOLLOWUP_PROMPT,
@@ -28,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Resilient LLM structured output invoker with exponential backoff for 429 rate limit protection
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=2, min=2, max=10),
     reraise=False
 )
 def call_llm_with_structured_output(prompt: str, schema: Any, system_instruction: str = ""):
@@ -42,6 +51,21 @@ def call_llm_with_structured_output(prompt: str, schema: Any, system_instruction
         return structured_llm.invoke(messages)
     except Exception as e:
         logger.warning(f"LLM structured call encountered exception: {e}. Retrying via tenacity...")
+        raise e
+
+# Resilient text LLM call wrapper
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=10),
+    reraise=False
+)
+def call_llm_with_text(messages: List[tuple], temperature: float = 0.0) -> str:
+    try:
+        llm = get_llm(temperature=temperature)
+        res = llm.invoke(messages)
+        return res.content.strip()
+    except Exception as e:
+        logger.warning(f"LLM text call encountered exception: {e}. Retrying...")
         raise e
 
 def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,15 +106,138 @@ def rewrite_followup(state: Dict[str, Any]) -> Dict[str, Any]:
         history_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-4:]])
         prompt = f"Chat History:\n{history_str}\n\nLatest Question: {question}"
         try:
-            llm = get_llm(temperature=0.0)
-            res = llm.invoke([("system", REWRITE_FOLLOWUP_PROMPT), ("human", prompt)])
-            rewritten = res.content.strip()
+            rewritten = call_llm_with_text([("system", REWRITE_FOLLOWUP_PROMPT), ("human", prompt)])
         except Exception as e:
             logger.error(f"Follow-up rewrite failed: {e}. Using original question.")
             rewritten = question
 
     path = state.get("path", []) + ["rewrite_followup"]
     return {"rewritten_question": rewritten, "path": path}
+
+# --- AUTONOMOUS PLANNER-EXECUTOR-EVALUATOR NODES ---
+
+def draft_research_plan(state: Dict[str, Any]) -> Dict[str, Any]:
+    question = state.get("rewritten_question", state["question"])
+    logger.info(f"Drafting autonomous multi-step research plan for: '{question}'")
+    
+    try:
+        plan = call_llm_with_structured_output(
+            prompt=f"Research Question: {question}",
+            schema=ResearchPlan,
+            system_instruction=PLANNER_PROMPT
+        )
+        if plan and plan.steps:
+            plan_steps = plan.steps
+        else:
+            plan_steps = [
+                f"Step 1: Define technical concepts and core mechanics of {question}",
+                f"Step 2: Perform comparative analysis, pros/cons, and alternative trade-offs for {question}",
+                f"Step 3: Analyze future implications, scaling challenges, and security aspects for {question}"
+            ]
+    except Exception as e:
+        logger.error(f"Drafting research plan failed: {e}. Using fallback steps.")
+        plan_steps = [
+            f"Step 1: Technical concepts and architecture of {question}",
+            f"Step 2: Comparative evaluation and trade-offs of {question}",
+            f"Step 3: Future trends and strategic outlook of {question}"
+        ]
+
+    path = state.get("path", []) + ["draft_research_plan"]
+    return {
+        "plan_steps": plan_steps,
+        "current_step_idx": 0,
+        "knowledge_ledger": [],
+        "sub_queries": plan_steps,
+        "path": path
+    }
+
+def execute_plan_step(state: Dict[str, Any]) -> Dict[str, Any]:
+    plan_steps = state.get("plan_steps", [])
+    step_idx = state.get("current_step_idx", 0)
+    knowledge_ledger = list(state.get("knowledge_ledger", []))
+    accumulated_docs = list(state.get("documents", []))
+    
+    if not plan_steps or step_idx >= len(plan_steps):
+        path = state.get("path", []) + ["execute_plan_step"]
+        return {"current_step_idx": step_idx, "path": path}
+
+    current_step = plan_steps[step_idx]
+    logger.info(f"Executing Research Plan Step [{step_idx + 1}/{len(plan_steps)}]: '{current_step}'")
+    
+    try:
+        retriever = get_retriever()
+        step_docs = retriever.retrieve(current_step, use_bm25=True, use_rerank=True)
+    except Exception as e:
+        logger.error(f"Step retrieval failed: {e}")
+        step_docs = []
+
+    # Summarize step findings
+    if step_docs:
+        context_str = "\n".join([d.page_content for d in step_docs[:3]])
+        prompt = f"Step Objective: {current_step}\n\nContext:\n{context_str}\n\nTask: Summarize key facts gathered in 2-3 concise bullet points."
+        try:
+            summary = call_llm_with_text([("human", prompt)])
+        except Exception:
+            summary = "\n".join([f"- {d.page_content[:150]}..." for d in step_docs[:3]])
+    else:
+        summary = "No specific document chunks retrieved for this step."
+
+    sources = [doc.metadata.get("source", "doc.pdf") for doc in step_docs]
+    ledger_entry = {
+        "step_num": step_idx + 1,
+        "step": current_step,
+        "summary": summary,
+        "sources": list(set(sources))
+    }
+    knowledge_ledger.append(ledger_entry)
+
+    # Accumulate deduplicated docs
+    for d in step_docs:
+        if d not in accumulated_docs:
+            accumulated_docs.append(d)
+
+    path = state.get("path", []) + [f"execute_plan_step_{step_idx + 1}"]
+    return {
+        "current_step_idx": step_idx + 1,
+        "knowledge_ledger": knowledge_ledger,
+        "documents": accumulated_docs,
+        "candidate_documents": accumulated_docs,
+        "path": path
+    }
+
+def reflect_on_knowledge(state: Dict[str, Any]) -> Dict[str, Any]:
+    question = state.get("rewritten_question", state["question"])
+    ledger = state.get("knowledge_ledger", [])
+    step_idx = state.get("current_step_idx", 0)
+    plan_steps = state.get("plan_steps", [])
+    
+    logger.info(f"Reflecting on cumulative knowledge ledger after step {step_idx}/{len(plan_steps)}...")
+    
+    ledger_str = "\n".join([f"Step {item['step_num']}: {item['step']}\nFindings:\n{item['summary']}" for item in ledger])
+    prompt = f"User Question: {question}\n\nCumulative Knowledge Ledger:\n{ledger_str}"
+    
+    try:
+        reflection = call_llm_with_structured_output(
+            prompt=prompt,
+            schema=ReflectionDecision,
+            system_instruction=EVALUATOR_REFLECTION_PROMPT
+        )
+        if reflection:
+            refl_dict = {
+                "sufficient": reflection.sufficient,
+                "missing_aspects": reflection.missing_aspects,
+                "reasoning": reflection.reasoning
+            }
+        else:
+            refl_dict = {"sufficient": step_idx >= len(plan_steps), "missing_aspects": [], "reasoning": "Default reflection."}
+    except Exception as e:
+        logger.error(f"Reflection LLM call failed: {e}. Falling back based on step limit.")
+        refl_dict = {"sufficient": step_idx >= len(plan_steps), "missing_aspects": [], "reasoning": "Fallback reflection."}
+
+    path = state.get("path", []) + ["reflect_on_knowledge"]
+    return {"reflection": refl_dict, "path": path}
+
+# --- STANDARD RAG NODES ---
 
 def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
     question = state.get("rewritten_question", state["question"])
@@ -196,9 +343,7 @@ def transform_query(state: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"Transforming query for better retrieval: '{current_query}'")
     
     try:
-        llm = get_llm(temperature=0.0)
-        res = llm.invoke([("system", REWRITE_FOR_RETRIEVAL_PROMPT), ("human", current_query)])
-        new_query = res.content.strip()
+        new_query = call_llm_with_text([("system", REWRITE_FOR_RETRIEVAL_PROMPT), ("human", current_query)])
     except Exception as e:
         logger.error(f"Query transformation failed: {e}")
         new_query = current_query
@@ -252,9 +397,7 @@ def generate(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         prompt = f"Context:\n{context_str}\n\nQuestion: {question}"
         try:
-            llm = get_llm(temperature=0.0)
-            res = llm.invoke([("system", GENERATE_PROMPT), ("human", prompt)])
-            answer = res.content
+            answer = call_llm_with_text([("system", GENERATE_PROMPT), ("human", prompt)])
         except Exception as e:
             logger.error(f"Generation failed: {e}")
             answer = "Error generating answer due to an unexpected system exception."
@@ -268,8 +411,9 @@ def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
     if not docs:
         docs = state.get("candidate_documents", [])
     web_res = state.get("web_results", [])
+    ledger = state.get("knowledge_ledger", [])
     
-    logger.info(f"Synthesizing Deep Research Report across {len(docs)} documents and {len(web_res)} web results...")
+    logger.info(f"Synthesizing Deep Research Report across {len(docs)} documents and {len(ledger)} plan ledger steps...")
     
     context_parts = []
     for i, doc in enumerate(docs, 1):
@@ -279,6 +423,10 @@ def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
 
     for j, w in enumerate(web_res, len(docs) + 1):
         context_parts.append(f"[{j}] Source: {w['url']}\n{w['content']}")
+
+    if ledger:
+        ledger_text = "\n".join([f"Step {item['step_num']} ({item['step']}): {item['summary']}" for item in ledger])
+        context_parts.append(f"\n--- Cumulative Knowledge Ledger ---\n{ledger_text}")
 
     context_str = "\n\n".join(context_parts)
     
@@ -291,9 +439,7 @@ def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
             question=question
         )
         try:
-            llm = get_llm(temperature=0.1)
-            res = llm.invoke([("human", prompt_str)])
-            report = res.content
+            report = call_llm_with_text([("human", prompt_str)], temperature=0.1)
         except Exception as e:
             logger.error(f"Deep Research Synthesis failed: {e}")
             report = f"# Deep Research Report: {question}\n\n## Executive Summary\nError synthesizing report: {e}"
@@ -337,9 +483,7 @@ def regenerate_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     prompt = f"Context:\n{context_str}\n\nQuestion: {question}\n\nInstruction: Remove any claim not directly supported by the context."
     
     try:
-        llm = get_llm(temperature=0.0)
-        res = llm.invoke([("system", GENERATE_PROMPT), ("human", prompt)])
-        answer = res.content
+        answer = call_llm_with_text([("system", GENERATE_PROMPT), ("human", prompt)])
     except Exception as e:
         logger.error(f"Strict regeneration failed: {e}")
         answer = state.get("answer", "")
@@ -351,9 +495,7 @@ def regenerate_strict(state: Dict[str, Any]) -> Dict[str, Any]:
 def chitchat(state: Dict[str, Any]) -> Dict[str, Any]:
     question = state["question"]
     try:
-        llm = get_llm(temperature=0.2)
-        res = llm.invoke([("system", CHITCHAT_PROMPT), ("human", question)])
-        answer = res.content
+        answer = call_llm_with_text([("system", CHITCHAT_PROMPT), ("human", question)], temperature=0.2)
     except Exception as e:
         logger.error(f"Chitchat failed: {e}")
         answer = "Hello! I am your Agentic RAG Research Assistant. I can help you answer questions or generate Deep Research Reports."

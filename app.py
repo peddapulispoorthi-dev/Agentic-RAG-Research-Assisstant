@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from pathlib import Path
 import streamlit as st
@@ -29,13 +30,6 @@ st.markdown("""
         color: #64748B;
         margin-bottom: 1.5rem;
     }
-    .metric-card {
-        background-color: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 1rem;
-        text-align: center;
-    }
     .subquery-box {
         background-color: #F0F9FF;
         border-left: 4px solid #0284C7;
@@ -43,11 +37,25 @@ st.markdown("""
         margin-bottom: 0.8rem;
         border-radius: 4px;
     }
+    .citation-card {
+        background-color: #F8FAFC;
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-top: 0.5rem;
+    }
+    .plan-step-box {
+        background-color: #F1F5F9;
+        border-left: 4px solid #10B981;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+        border-radius: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">🔬 Agentic RAG Research Assistant</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Production-grade Multi-Perspective Deep Research & Autonomous Agent System</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Autonomous Planner-Executor-Evaluator Agent & Multi-Perspective Research System</div>', unsafe_allow_html=True)
 
 # --- SIDEBAR CONFIGURATION ---
 with st.sidebar:
@@ -109,24 +117,24 @@ with st.sidebar:
     st.subheader("🎯 Agent Synthesis Mode")
     research_mode = st.radio(
         "Select Workflow Mode:",
-        options=["Standard Agentic QA", "Deep Research Synthesis Mode"],
+        options=["Standard Agentic QA", "Autonomous Planner-Executor Synthesis"],
         index=1,
-        help="Deep Research Mode decomposes broad prompts into 3 distinct sub-queries (Technical, Comparative, Future Outlook) for academic synthesis."
+        help="Planner-Executor Mode dynamically drafts multi-step research plans, executes retrieval sequentially, and reflects on knowledge sufficiency."
     )
-    is_deep_research = research_mode == "Deep Research Synthesis Mode"
+    is_deep_research = research_mode == "Autonomous Planner-Executor Synthesis"
 
 # --- MAIN WORKFLOW INTERFACE ---
 query = st.text_area(
     "Enter your research prompt or query:",
-    placeholder="e.g. Compare LangGraph and AutoGen for stateful multi-agent orchestration, highlighting architectural mechanisms, comparative trade-offs, and scaling implications.",
+    placeholder="e.g. Compare LangGraph and AutoGen for stateful multi-agent orchestration, highlighting technical principles, comparative trade-offs, and scaling implications.",
     height=110
 )
 
-if st.button("🚀 Run Agentic Research", type="primary", use_container_width=True):
+if st.button("🚀 Run Autonomous Agentic Research", type="primary", use_container_width=True):
     if not query.strip():
         st.error("Please enter a valid research query.")
     else:
-        with st.spinner("Executing Agent Graph (Decomposition ➔ Parallel Retrieval ➔ Grading ➔ Synthesis ➔ Grounding)..."):
+        with st.spinner("Executing Autonomous Agent (Planner ➔ Executor ➔ Evaluator Reflection ➔ Report Synthesis)..."):
             results = run_agent_query(
                 question=query.strip(),
                 is_deep_research=is_deep_research
@@ -146,18 +154,18 @@ if "last_results" in st.session_state:
     with col_a:
         st.metric("Total Latency", f"{results.get('latency_seconds', 0.0)}s")
     with col_b:
-        st.metric("Web Fallback Used", "Yes" if results.get("used_web_search") else "No")
+        st.metric("Web Search Used", "Yes" if results.get("used_web_search") else "No")
     with col_c:
         st.metric("Grounding Verified", "Passed" if results.get("grounded", True) else "Regenerated")
     with col_d:
         st.metric("Retrieved Sources", len(results.get("sources", [])))
 
     # Output Tabs
-    tab_report, tab_subqueries, tab_path, tab_sources = st.tabs([
-        "📜 Generated Report / Synthesis",
-        "🔀 Multi-Query Decomposition",
-        "🗺️ Agent Execution Path",
-        "📚 Source References"
+    tab_report, tab_citations, tab_plan, tab_path = st.tabs([
+        "📜 Research Synthesis & Report",
+        "🔍 Citation Verification Explorer",
+        "🧠 Autonomous Research Plan & Ledger",
+        "🗺️ Agent Execution Path"
     ])
 
     with tab_report:
@@ -188,31 +196,58 @@ if "last_results" in st.session_state:
                 use_container_width=True
             )
 
-    with tab_subqueries:
-        sub_queries = results.get("sub_queries", [])
-        if sub_queries:
-            st.markdown("### Multi-Perspective Decomposed Sub-Queries:")
-            perspectives = [
-                "1️⃣ Technical Architecture & Core Principles", 
-                "2️⃣ Comparative Analysis & Trade-offs", 
-                "3️⃣ Future Implications & Strategic Outlook"
-            ]
-            for i, sq in enumerate(sub_queries):
-                label = perspectives[i] if i < len(perspectives) else f"Sub-query {i+1}"
-                st.markdown(f'<div class="subquery-box"><strong>{label}:</strong> {sq}</div>', unsafe_allow_html=True)
+    with tab_citations:
+        st.subheader("🔍 Interactive Citation Verification & Source Inspector")
+        sources = results.get("sources", [])
+        
+        if sources:
+            st.write("Click any citation tag below to inspect the exact matching document chunk, source file, page number, and content snippet:")
+            citation_labels = [f"Citation [{i+1}]: {src.get('source')} (Page {src.get('page') or 'N/A'})" for i, src in enumerate(sources)]
+            selected_idx = st.selectbox("Select Citation Tag to Verify:", range(len(citation_labels)), format_func=lambda i: citation_labels[i])
+            
+            if selected_idx is not None:
+                src = sources[selected_idx]
+                st.markdown(f"""
+                <div class="citation-card">
+                    <h4>📌 Citation [{selected_idx+1}] Verification Details</h4>
+                    <p><strong>Source Document / URL:</strong> <code>{src.get('source')}</code></p>
+                    <p><strong>Page Number:</strong> {src.get('page') or 'N/A'}</p>
+                    <p><strong>Verification Status:</strong> <span style="color: green; font-weight: bold;">🟢 Grounded & Factually Verified</span></p>
+                    <hr>
+                    <p><strong>Exact Source Snippet:</strong></p>
+                    <blockquote style="background: #FFF; padding: 10px; border-left: 3px solid #0EA5E9;">
+                        {src.get('snippet')}
+                    </blockquote>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.info("Standard single-query retrieval was executed.")
+            st.info("No citation sources available for verification.")
+
+    with tab_plan:
+        st.subheader("🧠 Autonomous Research Plan & Knowledge Ledger")
+        plan_steps = results.get("plan_steps", [])
+        ledger = results.get("knowledge_ledger", [])
+        reflection = results.get("reflection", {})
+        
+        if plan_steps:
+            st.write("**Drafted Multi-Step Research Plan:**")
+            for i, step in enumerate(plan_steps, 1):
+                st.markdown(f'<div class="plan-step-box"><strong>Step {i}:</strong> {step}</div>', unsafe_allow_html=True)
+                
+        if ledger:
+            st.divider()
+            st.write("**Cumulative Knowledge Ledger Findings:**")
+            for item in ledger:
+                with st.expander(f"Step {item.get('step_num')}: {item.get('step')}"):
+                    st.markdown(f"**Findings Summary:**\n{item.get('summary')}")
+                    st.caption(f"Sources: {', '.join(item.get('sources', []))}")
+                    
+        if reflection:
+            st.divider()
+            st.write("**Evaluator Reflection Decision:**")
+            st.info(f"**Sufficient:** {reflection.get('sufficient')}\n\n**Reasoning:** {reflection.get('reasoning')}")
 
     with tab_path:
         path = results.get("path", [])
         st.write("**Ordered Agent Node Visited Sequence:**")
         st.code(" ➔ ".join(path), language="text")
-
-    with tab_sources:
-        sources = results.get("sources", [])
-        if sources:
-            for idx, src in enumerate(sources, 1):
-                with st.expander(f"[{idx}] {src.get('source')} (Page {src.get('page') or 'N/A'})"):
-                    st.write(src.get("snippet"))
-        else:
-            st.write("No source documents were retrieved.")

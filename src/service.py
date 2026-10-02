@@ -28,7 +28,11 @@ def run_agent_query(
         "regen_count": 0,
         "path": [],
         "is_deep_research": is_deep_research,
-        "sub_queries": []
+        "sub_queries": [],
+        "plan_steps": [],
+        "current_step_idx": 0,
+        "knowledge_ledger": [],
+        "reflection": {}
     }
     
     start_time = time.time()
@@ -43,19 +47,24 @@ def run_agent_query(
             sources.append({
                 "source": doc.metadata.get("source", "Document"),
                 "page": doc.metadata.get("page", 1),
-                "snippet": doc.page_content[:200]
+                "snippet": doc.page_content[:250],
+                "chunk_id": doc.metadata.get("chunk_id", "c0")
             })
         for web in final_state.get("web_results", []):
             sources.append({
                 "source": web.get("url", "Web"),
                 "page": None,
-                "snippet": web.get("content", "")[:200]
+                "snippet": web.get("content", "")[:250],
+                "chunk_id": web.get("url", "web")
             })
 
         return {
             "answer": final_state.get("answer", "No answer generated."),
             "report": final_state.get("report", ""),
             "sub_queries": final_state.get("sub_queries", []),
+            "plan_steps": final_state.get("plan_steps", []),
+            "knowledge_ledger": final_state.get("knowledge_ledger", []),
+            "reflection": final_state.get("reflection", {}),
             "sources": sources,
             "path": final_state.get("path", []),
             "latency_seconds": elapsed,
@@ -68,6 +77,9 @@ def run_agent_query(
             "answer": f"An error occurred while processing your research request: {e}",
             "report": "",
             "sub_queries": [],
+            "plan_steps": [],
+            "knowledge_ledger": [],
+            "reflection": {},
             "sources": [],
             "path": [],
             "latency_seconds": round(time.time() - start_time, 3),

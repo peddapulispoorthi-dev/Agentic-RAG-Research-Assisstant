@@ -17,3 +17,9 @@ class GraphState(TypedDict):
     is_deep_research: bool
     sub_queries: List[str]
     report: str
+    
+    # Autonomous Planner-Executor-Evaluator Research Loop State
+    plan_steps: List[str]
+    current_step_idx: int
+    knowledge_ledger: List[Dict[str, Any]]
+    reflection: Dict[str, Any]

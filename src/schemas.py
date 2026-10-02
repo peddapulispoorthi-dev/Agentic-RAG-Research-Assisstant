@@ -1,4 +1,4 @@
-from typing import Literal, List, Optional
+from typing import Literal, List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 class RouteDecision(BaseModel):
@@ -18,6 +18,15 @@ class MultiQueryDecomposition(BaseModel):
 
     def get_queries(self) -> List[str]:
         return [self.technical_definition, self.comparative_analysis, self.future_implications]
+
+class ResearchPlan(BaseModel):
+    topic: str = Field(description="Primary research topic")
+    steps: List[str] = Field(description="Sequential 3 to 4 targeted research steps to execute")
+
+class ReflectionDecision(BaseModel):
+    sufficient: bool = Field(description="True if cumulative knowledge is sufficient to answer prompt completely")
+    missing_aspects: List[str] = Field(default_factory=list, description="Aspects still needing research if insufficient")
+    reasoning: str = Field(description="Brief reasoning for reflection decision")
 
 class RelevanceGrade(BaseModel):
     relevant: bool
@@ -40,9 +49,34 @@ class AnswerResult(BaseModel):
     used_web_search: bool = False
     rewritten_query: Optional[str] = None
     sub_queries: List[str] = Field(default_factory=list)
+    plan_steps: List[str] = Field(default_factory=list)
+    knowledge_ledger: List[Dict[str, Any]] = Field(default_factory=list)
+    reflection: Optional[Dict[str, Any]] = None
     latency_seconds: float = 0.0
 
 class AskRequest(BaseModel):
     question: str
-    history: List[dict] = Field(default_factory=list)   # [{"role": "user"|"assistant", "content": "..."}]
+    history: List[dict] = Field(default_factory=list)
     is_deep_research: bool = False
+
+# --- RAG TRIAD EVALUATION SCHEMAS ---
+class ContextRelevanceEval(BaseModel):
+    score: float = Field(description="Score between 0.0 and 1.0 indicating how relevant retrieved context is to question")
+    reasoning: str
+
+class GroundednessEval(BaseModel):
+    score: float = Field(description="Score between 0.0 and 1.0 indicating how grounded response is in context")
+    unsupported_claims: List[str] = Field(default_factory=list)
+    reasoning: str
+
+class AnswerRelevanceEval(BaseModel):
+    score: float = Field(description="Score between 0.0 and 1.0 indicating how relevant response is to original prompt")
+    reasoning: str
+
+class RAGTriadScore(BaseModel):
+    question: str
+    context_relevance: float
+    groundedness: float
+    answer_relevance: float
+    overall_score: float
+    details: Dict[str, Any] = Field(default_factory=dict)
