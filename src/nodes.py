@@ -32,7 +32,7 @@ from src.prompts import (
 
 logger = logging.getLogger(__name__)
 
-# Fast LLM call wrapper with low latency timeout (5s timeout to prevent 2-3 min rate limit stalls)
+# Fast LLM call wrapper with low latency timeout
 def fast_call_llm_text(messages: List[tuple], temperature: float = 0.0) -> Optional[str]:
     try:
         llm = get_llm(temperature=temperature)
@@ -42,7 +42,7 @@ def fast_call_llm_text(messages: List[tuple], temperature: float = 0.0) -> Optio
         logger.warning(f"LLM call encountered quota limit / timeout ({e}). Using ultra-fast fallback.")
         return None
 
-def fast_call_llm_structured(prompt: str, schema: Any, system_instruction: str = ""):
+def call_llm_with_structured_output(prompt: str, schema: Any, system_instruction: str = ""):
     try:
         llm = get_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(schema)
@@ -55,6 +55,9 @@ def fast_call_llm_structured(prompt: str, schema: Any, system_instruction: str =
         logger.warning(f"Structured LLM call encountered quota limit / timeout ({e}).")
         return None
 
+# Alias for backwards compatibility
+fast_call_llm_structured = call_llm_with_structured_output
+
 # --- ULTRA-FAST ROUTING (Instant Keyword Rule + LLM Fallback) ---
 def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
     question = state["question"].strip().lower()
@@ -65,9 +68,17 @@ def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
     elif any(question.startswith(kw) for kw in ["hi", "hello", "hey", "greetings", "thanks", "thank you"]):
         route = "chitchat"
     else:
-        route = "vectorstore"
+        try:
+            decision = call_llm_with_structured_output(
+                prompt=f"Question: {question}",
+                schema=RouteDecision,
+                system_instruction=ROUTER_PROMPT
+            )
+            route = decision.datasource if decision else "vectorstore"
+        except Exception:
+            route = "vectorstore"
 
-    logger.info(f"Fast routed question to: '{route}'")
+    logger.info(f"Routed question to: '{route}'")
     path = state.get("path", []) + ["route_question"]
     return {
         "route": route,
@@ -93,11 +104,27 @@ def rewrite_followup(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
     question = state.get("rewritten_question", state["question"])
-    sub_queries = [
-        f"{question} technical details architecture",
-        f"{question} comparative evaluation benchmarks",
-        f"{question} future directions applications"
-    ]
+    try:
+        decomposition = call_llm_with_structured_output(
+            prompt=f"Research Question: {question}",
+            schema=MultiQueryDecomposition,
+            system_instruction=MULTI_QUERY_DECOMPOSITION_PROMPT
+        )
+        if decomposition:
+            sub_queries = decomposition.get_queries()
+        else:
+            sub_queries = [
+                f"{question} technical details architecture",
+                f"{question} comparative evaluation benchmarks",
+                f"{question} future directions applications"
+            ]
+    except Exception:
+        sub_queries = [
+            f"{question} technical details architecture",
+            f"{question} comparative evaluation benchmarks",
+            f"{question} future directions applications"
+        ]
+
     path = state.get("path", []) + ["decompose_query"]
     return {"sub_queries": sub_queries, "path": path}
 
@@ -204,9 +231,27 @@ def retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"candidate_documents": docs, "path": path}
 
 def grade_documents(state: Dict[str, Any]) -> Dict[str, Any]:
+    question = state.get("rewritten_question", state["question"])
     candidates = state.get("candidate_documents", [])
+    logger.info(f"Grading {len(candidates)} candidate documents...")
+
+    relevant_docs = []
+    for doc in candidates:
+        try:
+            grade = call_llm_with_structured_output(
+                prompt=f"Question: {question}\n\nDocument Chunk:\n{doc.page_content}",
+                schema=RelevanceGrade,
+                system_instruction=GRADE_DOC_PROMPT
+            )
+            if grade and grade.relevant:
+                relevant_docs.append(doc)
+            elif grade is None:
+                relevant_docs.append(doc)
+        except Exception:
+            relevant_docs.append(doc)
+
     path = state.get("path", []) + ["grade_documents"]
-    return {"documents": candidates, "path": path}
+    return {"documents": relevant_docs, "path": path}
 
 def transform_query(state: Dict[str, Any]) -> Dict[str, Any]:
     current_query = state.get("rewritten_question", state["question"])
@@ -308,8 +353,29 @@ def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"answer": report, "report": report, "path": path}
 
 def check_grounding(state: Dict[str, Any]) -> Dict[str, Any]:
+    docs = state.get("documents", [])
+    web_res = state.get("web_results", [])
+    answer = state.get("answer", "")
+    
+    if not docs and not web_res:
+        path = state.get("path", []) + ["check_grounding"]
+        return {"grounded": True, "path": path}
+
+    context_str = "\n".join([d.page_content for d in docs] + [w["content"] for w in web_res])
+    prompt = f"Context:\n{context_str}\n\nAnswer:\n{answer}"
+    
+    try:
+        grade = call_llm_with_structured_output(
+            prompt=prompt,
+            schema=GroundingGrade,
+            system_instruction=GROUNDING_PROMPT
+        )
+        grounded = grade.grounded if grade else True
+    except Exception:
+        grounded = True
+
     path = state.get("path", []) + ["check_grounding"]
-    return {"grounded": True, "path": path}
+    return {"grounded": grounded, "path": path}
 
 def regenerate_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     path = state.get("path", []) + ["regenerate_strict"]
