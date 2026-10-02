@@ -31,7 +31,8 @@ def ingest_pdfs(reset: bool = False):
     if reset:
         logger.info("Reset flag set. Clearing old index files.")
         for f in index_dir.glob("*"):
-            f.unlink()
+            if f.name != ".gitkeep":
+                f.unlink()
 
     all_docs = []
     file_count = 0
@@ -82,6 +83,13 @@ def ingest_pdfs(reset: bool = False):
     chunks_path = index_dir / "chunks.pkl"
     with open(chunks_path, "wb") as f:
         pickle.dump(chunks, f)
+
+    # Force clear retriever cache so newly ingested PDFs are immediately searchable
+    try:
+        from src.retrievers import reload_retriever
+        reload_retriever()
+    except Exception as e:
+        logger.warning(f"Could not automatically clear retriever cache: {e}")
 
     logger.info(f"Ingestion complete! Processed {file_count} files, {total_pages} pages, resulting in {len(chunks)} chunks.")
     logger.info(f"Index saved successfully to {index_dir}")

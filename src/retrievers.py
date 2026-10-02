@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 class HybridRetriever:
     def __init__(self):
+        self._load_index()
+
+    def _load_index(self):
         index_dir = settings.INDEX_DIR
         faiss_path = os.path.join(index_dir, "index.faiss")
         chunks_path = os.path.join(index_dir, "chunks.pkl")
@@ -54,17 +57,27 @@ class HybridRetriever:
         tokenized_corpus = [self._tokenize(doc.page_content) for doc in self.chunks]
         self.bm25 = BM25Okapi(tokenized_corpus)
 
-        logger.info(f"Loading CrossEncoder rerank model: {settings.RERANK_MODEL}...")
         try:
             self.cross_encoder = CrossEncoder(settings.RERANK_MODEL)
         except Exception as e:
-            logger.error(f"Failed to load CrossEncoder model {settings.RERANK_MODEL}: {e}. Proceeding without reranker.")
+            logger.warning(f"Skipping CrossEncoder initialization: {e}")
             self.cross_encoder = None
+
+    def _reload_if_needed(self):
+        """Dynamically check and reload index if files were added after initialization."""
+        if self.vectorstore is None:
+            index_dir = settings.INDEX_DIR
+            faiss_path = os.path.join(index_dir, "index.faiss")
+            chunks_path = os.path.join(index_dir, "chunks.pkl")
+            if os.path.exists(faiss_path) and os.path.exists(chunks_path):
+                logger.info("New index files detected. Dynamically reloading FAISS + BM25...")
+                self._load_index()
 
     def _tokenize(self, text: str) -> List[str]:
         return re.findall(r"\w+", text.lower())
 
     def dense_search(self, query: str, k: int) -> List[Document]:
+        self._reload_if_needed()
         if not self.vectorstore:
             return []
         try:
@@ -75,6 +88,7 @@ class HybridRetriever:
             return []
 
     def bm25_search(self, query: str, k: int) -> List[Document]:
+        self._reload_if_needed()
         if not self.bm25 or not self.chunks:
             return []
         try:
@@ -136,6 +150,7 @@ class HybridRetriever:
             return docs[:k]
 
     def retrieve(self, query: str, use_bm25: bool = True, use_rerank: bool = True) -> List[Document]:
+        self._reload_if_needed()
         dense_docs = self.dense_search(query, k=settings.TOP_K_DENSE)
         
         if not use_bm25:
@@ -150,7 +165,6 @@ class HybridRetriever:
         return self.rerank(query, candidate_docs, k=settings.TOP_K_FINAL)
 
     def _is_duplicate(self, doc: Document, existing_docs: List[Document], threshold: float = 0.85) -> bool:
-        """Similarity threshold deduplication using Jaccard word similarity & chunk IDs."""
         doc_id = doc.metadata.get("chunk_id")
         content1 = doc.page_content.strip()
         words1 = set(self._tokenize(content1))
@@ -181,16 +195,14 @@ class HybridRetriever:
         use_rerank: bool = True,
         similarity_threshold: Optional[float] = None
     ) -> List[Document]:
-        """Concurrent multi-query hybrid retriever with similarity deduplication."""
+        self._reload_if_needed()
         if not queries:
             return []
 
         if similarity_threshold is None:
             similarity_threshold = settings.DEDUPLICATION_SIMILARITY_THRESHOLD
 
-        logger.info(f"Executing parallel hybrid retrieval for {len(queries)} sub-queries...")
         results_per_query: List[List[Document]] = []
-
         workers = min(len(queries), settings.PARALLEL_RETRIEVAL_WORKERS)
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_query = {
@@ -211,9 +223,12 @@ class HybridRetriever:
                 if not self._is_duplicate(doc, consolidated_docs, threshold=similarity_threshold):
                     consolidated_docs.append(doc)
 
-        logger.info(f"Parallel retrieval completed. Total deduplicated documents: {len(consolidated_docs)}.")
         return consolidated_docs
 
 @functools.lru_cache(maxsize=1)
 def get_retriever() -> HybridRetriever:
     return HybridRetriever()
+
+def reload_retriever():
+    get_retriever.cache_clear()
+    return get_retriever()
