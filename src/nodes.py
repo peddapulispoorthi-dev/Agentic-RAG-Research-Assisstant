@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from langchain_core.documents import Document
 from tavily import TavilyClient
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import settings
 from src.llm import get_llm
@@ -32,14 +33,29 @@ from src.prompts import (
 
 logger = logging.getLogger(__name__)
 
-# Fast LLM call wrapper with low latency timeout
+def get_active_question(state: Dict[str, Any]) -> str:
+    """Helper to safely retrieve non-empty active question string from graph state."""
+    rewritten = state.get("rewritten_question")
+    if rewritten and isinstance(rewritten, str) and rewritten.strip():
+        return rewritten.strip()
+    return state.get("question", "").strip()
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=8),
+    reraise=True
+)
+def _invoke_llm_with_retry(llm_instance, messages):
+    return llm_instance.invoke(messages)
+
+# Fast LLM call wrapper with retry backoff for rate limit resilience
 def fast_call_llm_text(messages: List[tuple], temperature: float = 0.0) -> Optional[str]:
     try:
         llm = get_llm(temperature=temperature)
-        res = llm.invoke(messages)
+        res = _invoke_llm_with_retry(llm, messages)
         return res.content.strip()
     except Exception as e:
-        logger.warning(f"LLM call encountered quota limit / timeout ({e}). Using ultra-fast fallback.")
+        logger.warning(f"LLM call encountered exception/rate limit after retries ({e}). Using fallback.")
         return None
 
 def call_llm_with_structured_output(prompt: str, schema: Any, system_instruction: str = ""):
@@ -50,9 +66,9 @@ def call_llm_with_structured_output(prompt: str, schema: Any, system_instruction
         if system_instruction:
             messages.append(("system", system_instruction))
         messages.append(("human", prompt))
-        return structured_llm.invoke(messages)
+        return _invoke_llm_with_retry(structured_llm, messages)
     except Exception as e:
-        logger.warning(f"Structured LLM call encountered quota limit / timeout ({e}).")
+        logger.warning(f"Structured LLM call encountered exception/rate limit after retries ({e}).")
         return None
 
 # Alias for backwards compatibility
@@ -60,13 +76,14 @@ fast_call_llm_structured = call_llm_with_structured_output
 
 # --- ULTRA-FAST ROUTING (Instant Keyword Rule + LLM Fallback) ---
 def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state["question"].strip().lower()
+    question = get_active_question(state)
+    q_lower = question.lower()
     is_deep = state.get("is_deep_research", False)
     
-    if is_deep or any(kw in question for kw in ["report", "deep research", "comprehensive report", "detailed synthesis", "academic review"]):
-        route = "deep_research"
-    elif any(question.startswith(kw) for kw in ["hi", "hello", "hey", "greetings", "thanks", "thank you"]):
+    if any(q_lower.startswith(kw) for kw in ["hi", "hello", "hey", "greetings", "thanks", "thank you"]):
         route = "chitchat"
+    elif is_deep or any(kw in q_lower for kw in ["report", "deep research", "comprehensive report", "detailed synthesis", "academic review", "research report"]):
+        route = "deep_research"
     else:
         try:
             decision = call_llm_with_structured_output(
@@ -78,7 +95,7 @@ def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             route = "vectorstore"
 
-    logger.info(f"Routed question to: '{route}'")
+    logger.info(f"Routed question '{question}' to: '{route}'")
     path = state.get("path", []) + ["route_question"]
     return {
         "route": route,
@@ -90,7 +107,7 @@ def route_question(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def rewrite_followup(state: Dict[str, Any]) -> Dict[str, Any]:
     history = state.get("history", [])
-    question = state["question"]
+    question = get_active_question(state)
     
     if not history:
         rewritten = question
@@ -103,7 +120,7 @@ def rewrite_followup(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"rewritten_question": rewritten, "path": path}
 
 def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state.get("rewritten_question", state["question"])
+    question = get_active_question(state)
     try:
         decomposition = call_llm_with_structured_output(
             prompt=f"Research Question: {question}",
@@ -114,15 +131,16 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
             sub_queries = decomposition.get_queries()
         else:
             sub_queries = [
-                f"{question} technical details architecture",
-                f"{question} comparative evaluation benchmarks",
-                f"{question} future directions applications"
+                f"{question} key facts details cost answer",
+                f"{question} technical principles architecture",
+                f"{question} comparative evaluation benchmarks"
             ]
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Decompose query failed: {e}")
         sub_queries = [
-            f"{question} technical details architecture",
-            f"{question} comparative evaluation benchmarks",
-            f"{question} future directions applications"
+            f"{question} key facts details cost answer",
+            f"{question} technical principles architecture",
+            f"{question} comparative evaluation benchmarks"
         ]
 
     path = state.get("path", []) + ["decompose_query"]
@@ -130,8 +148,9 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def parallel_retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
     sub_queries = state.get("sub_queries", [])
+    question = get_active_question(state)
     if not sub_queries:
-        sub_queries = [state.get("rewritten_question", state["question"])]
+        sub_queries = [question]
     try:
         retriever = get_retriever()
         docs = retriever.parallel_hybrid_retrieve(sub_queries, use_bm25=True, use_rerank=False)
@@ -143,11 +162,11 @@ def parallel_retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- AUTONOMOUS PLANNER NODES ---
 def draft_research_plan(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state.get("rewritten_question", state["question"])
+    question = get_active_question(state)
     plan_steps = [
-        f"1. Technical Principles & Architecture of {question}",
-        f"2. Comparative Analysis & Performance Trade-offs for {question}",
-        f"3. Future Implications, Security & Strategic Outlook for {question}"
+        f"1. Core Specific Query & Direct Answer for: {question}",
+        f"2. Technical Principles & Architecture of: {question}",
+        f"3. Comparative Analysis & Performance Trade-offs for: {question}"
     ]
 
     path = state.get("path", []) + ["draft_research_plan"]
@@ -217,7 +236,7 @@ def reflect_on_knowledge(state: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- FAST RETRIEVAL & GENERATION NODES ---
 def retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
-    query = state.get("rewritten_question", state["question"])
+    query = get_active_question(state)
     logger.info(f"Fast retrieving documents for query: '{query}'")
     
     try:
@@ -231,9 +250,9 @@ def retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"candidate_documents": docs, "path": path}
 
 def grade_documents(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state.get("rewritten_question", state["question"])
+    question = get_active_question(state)
     candidates = state.get("candidate_documents", [])
-    logger.info(f"Grading {len(candidates)} candidate documents...")
+    logger.info(f"Grading {len(candidates)} candidate documents for question '{question}'...")
 
     relevant_docs = []
     for doc in candidates:
@@ -254,13 +273,17 @@ def grade_documents(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"documents": relevant_docs, "path": path}
 
 def transform_query(state: Dict[str, Any]) -> Dict[str, Any]:
-    current_query = state.get("rewritten_question", state["question"])
+    current_query = get_active_question(state)
     retry_count = state.get("retry_count", 0) + 1
+    rewritten = fast_call_llm_text(
+        [("system", REWRITE_FOR_RETRIEVAL_PROMPT), ("human", f"Original Query: {current_query}")]
+    ) or current_query
+
     path = state.get("path", []) + ["transform_query"]
-    return {"rewritten_question": current_query, "retry_count": retry_count, "path": path}
+    return {"rewritten_question": rewritten, "retry_count": retry_count, "path": path}
 
 def web_search(state: Dict[str, Any]) -> Dict[str, Any]:
-    query = state.get("rewritten_question", state["question"])
+    query = get_active_question(state)
     web_results = []
     tavily_key = settings.TAVILY_API_KEY or os.getenv("TAVILY_API_KEY")
     if tavily_key:
@@ -280,7 +303,7 @@ def web_search(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"web_results": web_results, "path": path}
 
 def generate(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state.get("rewritten_question", state["question"])
+    question = get_active_question(state)
     docs = state.get("documents", [])
     web_res = state.get("web_results", [])
     
@@ -302,7 +325,8 @@ def generate(state: Dict[str, Any]) -> Dict[str, Any]:
         answer = fast_call_llm_text([("system", GENERATE_PROMPT), ("human", prompt)])
         
         if not answer:
-            answer = f"**Summary from Uploaded Documents:**\n\n"
+            logger.warning("LLM generation returned empty response. Utilizing clean source extract fallback.")
+            answer = f"**Answer Summary from Uploaded Documents:**\n\n"
             for i, doc in enumerate(docs[:3], 1):
                 src = doc.metadata.get("source", "Document")
                 pg = doc.metadata.get("page", 1)
@@ -312,7 +336,7 @@ def generate(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"answer": answer, "path": path}
 
 def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state.get("rewritten_question", state["question"])
+    question = get_active_question(state)
     docs = state.get("documents", [])
     if not docs:
         docs = state.get("candidate_documents", [])
@@ -341,7 +365,8 @@ def synthesize_deep_research_report(state: Dict[str, Any]) -> Dict[str, Any]:
         report = fast_call_llm_text([("human", prompt_str)], temperature=0.1)
         
         if not report:
-            report = f"# Deep Research Report: {question}\n\n## Executive Summary\nReport compiled directly from retrieved research context:\n\n"
+            logger.warning("LLM report synthesis failed or timed out. Utilizing clean structured report fallback.")
+            report = f"# Deep Research Report: {question}\n\n## Executive Summary\nSynthesized research findings compiled directly from retrieved research context:\n\n"
             for item in ledger:
                 report += f"### {item.get('step')}\n{item.get('summary')}\n\n"
             for i, doc in enumerate(docs[:4], 1):
@@ -382,7 +407,7 @@ def regenerate_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     return {"answer": state.get("answer", ""), "regen_count": 1, "path": path}
 
 def chitchat(state: Dict[str, Any]) -> Dict[str, Any]:
-    question = state["question"]
+    question = get_active_question(state)
     answer = fast_call_llm_text([("system", CHITCHAT_PROMPT), ("human", question)], temperature=0.2) or "Hello! I am your Agentic RAG Research Assistant."
     path = state.get("path", []) + ["chitchat"]
     return {"answer": answer, "path": path}
